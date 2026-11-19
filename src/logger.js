@@ -44,8 +44,56 @@ const errorTrackerFormat = winston.format((info) => {
   return info;
 });
 
+
+// ==================== LOG SAMPLING (#734) ====================
+const DEFAULT_SAMPLE_RATE = 1.0;
+
+function parseSampleRate(value, fallback = DEFAULT_SAMPLE_RATE) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(1, Math.max(0, parsed));
+}
+
+let configuredSampleRate = parseSampleRate(process.env.LOG_SAMPLE_RATE, DEFAULT_SAMPLE_RATE);
+
+function getLogSampleRate() {
+  return configuredSampleRate;
+}
+
+function setLogSampleRate(rate) {
+  configuredSampleRate = parseSampleRate(rate, DEFAULT_SAMPLE_RATE);
+  return configuredSampleRate;
+}
+
+function shouldSampleLog(sampleRate = configuredSampleRate, randomFn = Math.random) {
+  const rate = parseSampleRate(sampleRate, configuredSampleRate);
+  if (rate >= 1) return true;
+  if (rate <= 0) return false;
+  return randomFn() < rate;
+}
+
+const samplingFormat = winston.format((info) => {
+  const hasExplicitRate = info && info.sampleRate !== undefined;
+  const isHighSeverity = info.level === 'error' || info.level === 'warn';
+  if (!hasExplicitRate && isHighSeverity) {
+    return info;
+  }
+  const effectiveRate = hasExplicitRate
+    ? parseSampleRate(info.sampleRate, configuredSampleRate)
+    : configuredSampleRate;
+  if (hasExplicitRate) {
+    delete info.sampleRate;
+  }
+  if (!shouldSampleLog(effectiveRate)) {
+    return false;
+  }
+  return info;
+});
+
 // ==================== BASE FORMATS ====================
 const baseFormats = [
+  samplingFormat(),
   winston.format.timestamp({ format: () => nowIso() }),
   winston.format.errors({ stack: true }),
   requestIdFormat(),
@@ -125,7 +173,18 @@ function getCurrentLogLevel() {
   return logger.level;
 }
 
+logger.sampled = function sampled(level, message, meta = {}, sampleRate = configuredSampleRate) {
+  if (!shouldSampleLog(sampleRate)) {
+    return logger;
+  }
+  return logger.log(level, message, { ...meta });
+};
+
 module.exports = logger;
 module.exports.setLogLevel = setLogLevel;
 module.exports.getCurrentLogLevel = getCurrentLogLevel;
 module.exports.VALID_LEVELS = VALID_LEVELS;
+module.exports.DEFAULT_SAMPLE_RATE = DEFAULT_SAMPLE_RATE;
+module.exports.getLogSampleRate = getLogSampleRate;
+module.exports.setLogSampleRate = setLogSampleRate;
+module.exports.shouldSampleLog = shouldSampleLog;

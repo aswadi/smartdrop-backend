@@ -69,3 +69,34 @@ describe('log redaction (#94)', () => {
     expect(out.authorization).toBe('[REDACTED]');
   });
 });
+
+describe('Logger sampling for high-volume events (#734)', () => {
+  const logger = require('../src/logger');
+
+  afterEach(() => {
+    logger.setLogSampleRate(1.0);
+  });
+
+  test('shouldSampleLog respects rate boundaries and custom random source', () => {
+    expect(logger.shouldSampleLog(1.0, () => 0.99)).toBe(true);
+    expect(logger.shouldSampleLog(0.0, () => 0.0)).toBe(false);
+    expect(logger.shouldSampleLog(0.25, () => 0.1)).toBe(true);
+    expect(logger.shouldSampleLog(0.25, () => 0.5)).toBe(false);
+  });
+
+  test('setLogSampleRate clamps values to [0, 1]', () => {
+    expect(logger.setLogSampleRate(0.1)).toBe(0.1);
+    expect(logger.getLogSampleRate()).toBe(0.1);
+    expect(logger.setLogSampleRate(2)).toBe(1);
+    expect(logger.setLogSampleRate(-1)).toBe(0);
+  });
+
+  test('logger.sampled skips logging when sample rate is 0', () => {
+    const spy = jest.spyOn(logger, 'log').mockImplementation(() => logger);
+    logger.sampled('info', 'high-volume event dropped', { event: 'tick' }, 0);
+    expect(spy).not.toHaveBeenCalled();
+    logger.sampled('info', 'high-volume event kept', { event: 'tick' }, 1);
+    expect(spy).toHaveBeenCalledWith('info', 'high-volume event kept', { event: 'tick' });
+    spy.mockRestore();
+  });
+});
